@@ -8,18 +8,15 @@ from keras.applications import ResNet50
 from keras.utils import Sequence
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.backend import epsilon
-from sklearn.metrics import classification_report, confusion_matrix, f1_score, plot_confusion_matrix, recall_score, precision_score, accuracy_score
-from keras.utils import to_categorical
+
 from keras.models import load_model, Model
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers import BatchNormalization, Concatenate, Conv2D, Dense, Dropout, Flatten, GlobalAveragePooling2D, Input, Lambda, ZeroPadding2D, MaxPooling2D
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
-from keras.datasets import mnist
-from sklearn.model_selection import GridSearchCV, ParameterGrid, cross_val_score, train_test_split
+
+from sklearn.model_selection import cross_val_score, train_test_split
 import joblib
-from sklearn.tree import DecisionTreeClassifier
-from tensorflow.keras import backend as K
+
+from keras import backend as K
 """Note
 Stretched dataset:
 Total number of boxes: 34
@@ -53,8 +50,15 @@ folder = 'output-stretched.csv'
 df = pd.read_csv(folder , sep=',')
 print(df)
 
-# a dictionary where the keys are the image filenames
-# and the values are lists of bounding box tuples
+"""
+function to get the coordinates of bounding boxes in csv file
+Description: 
+1/Return a dictionary where the keys are the image filenames
+  and the values are lists of bounding box tuples 
+(xmin,ymin,xmax,ymax)
+
+"""
+
 def bounding_boxes():
     boxes_dict = {}
     for index, row in df.iterrows():
@@ -93,6 +97,10 @@ for key, value in boxes.items():
 
 print("Total number of boxes: {}".format(num_boxes))
 
+"""
+Back bone cnn for feeding into RPN
+using find-tuned cnn alexnet with batch normlization to prevent the imbalance situations
+"""
 def cnn_axlexnet(dimension):
     input = Input(shape = dimension)
 
@@ -119,18 +127,23 @@ def cnn_axlexnet(dimension):
     x = Conv2D(filters= 256 , kernel_size= 3, strides=1 , name = 'conv5', activation = 'relu')(x)
     x = MaxPooling2D(pool_size=3, strides=2, name="pool3")
     return x
-
+"""
+RPN layer
+Description:
+1/return the x_class which is determine which is the foregound which is back ground
+  and x_regr for the bounding box
+2/args: baselayer which is the backbone in the function 
+        num_anchors is the number of anchors boxes for find 
+        the iou between the actual box and predicted boxes
+"""
 def rpn_layer(base_layers, num_anchors):
     x = Conv2D(512, (3,3), padding='same', activation='relu', kernel_initializer='normal', name='rpn_conv1')(base_layers)
     x_class = Conv2D(num_anchors, (1,1), activation='sigmoid', kernel_initializer='uniform', name='rpn_out_class')(x)
     x_regr = Conv2D(num_anchors * 4, (1,1), activation='linear', kernel_initializer='zero', name='rpn_out_regress')(x)
     return [x_class, x_regr]
 
-
-
-
-def roi_pooling(conv_feature_map, rois, pool_size):
-    """
+"""
+Description:
     ROI pooling implementation using TensorFlow's crop_and_resize function.
     Args:
         conv_feature_map: The convolutional feature map of shape (batch_size, height, width, channels).
@@ -138,7 +151,9 @@ def roi_pooling(conv_feature_map, rois, pool_size):
         pool_size: The output size of the pooled region of interest, as a tuple of two integers (pool_height, pool_width).
     Returns:
         The ROI pooled features, as a tensor of shape (num_rois, pool_height, pool_width, channels).
-    """
+"""
+def roi_pooling(conv_feature_map, rois, pool_size):
+    
     num_rois = tf.shape(rois)[0]
     batch_size = tf.shape(conv_feature_map)[0]
     num_channels = tf.shape(conv_feature_map)[3]
@@ -155,15 +170,30 @@ def roi_pooling(conv_feature_map, rois, pool_size):
         roi_width = x_max - x_min
 
         # Compute the height and width of each pooling bin
+        # Dividing the height and width of the ROI by the height and width of 
+        # the desired pooled size gives the number of bins required to achieve 
+        # desired output size
         bin_size_h = tf.cast(tf.math.ceil(roi_height / pool_size[0]), dtype=tf.int32)
         bin_size_w = tf.cast(tf.math.ceil(roi_width / pool_size[1]), dtype=tf.int32)
 
+        # Description:
         # Compute the row and column indices of the pooling bins
+        # The delta parameter specifies the distance between consecutive values, 
+        # which is the size of each bin.
+        # the rows and cols are also the top-left corners of the bins
         rows = tf.range(y_min, y_max, delta=(roi_height / pool_size[0]))
         cols = tf.range(x_min, x_max, delta=(roi_width / pool_size[1]))
 
-        # Convert the row and column indices to the format expected by crop_and_resize
+        """
+        Description:
+        Convert the row and column indices to the format expected by crop_and_resize
+        The first two elements in each row of the tensor boxes represent the top-left coordinates of each bin, 
+        and the last two elements represent the bottom-right coordinates of each bin.
+        """
         boxes = tf.transpose(tf.stack([rows, cols, rows + bin_size_h, cols + bin_size_w]))
+        """
+        Normalizing the coordiantes
+        """
         boxes = boxes / tf.constant([K.cast(tf.shape(conv_feature_map)[1], tf.float32),
                                       K.cast(tf.shape(conv_feature_map)[2], tf.float32),
                                       K.cast(tf.shape(conv_feature_map)[1], tf.float32),
@@ -184,66 +214,150 @@ def roi_pooling(conv_feature_map, rois, pool_size):
     return pooled_features
 
 
-class RoiPoolingConv(layers):
-    def __init__(self, pool_size, num_rois, **kwargs):
-        super(RoiPoolingConv, self).__init__(**kwargs)
-        self.pool_size = pool_size
-        self.num_rois = num_rois
+def classification_head(x, num_classes):
+    x = Flatten()(x)
+    x = Dense(4096, activation='relu')(x)
+    x = Dense(4096, activation='relu')(x)
+    x = Dense(num_classes, activation='softmax')(x)
+    return x
 
-    def build(self, input_shape):
-        self.nb_channels = input_shape[0][3]
+# Regression Head
 
-    def compute_output_shape(self, input_shape):
-        return None, self.num_rois, self.pool_size, self.pool_size, self.nb_channels
+def regression_head(x, num_anchors):
+    x = Flatten()(x)
+    x = Dense(4096, activation='relu')(x)
+    x = Dense(4096, activation='relu')(x)
+    x = Dense(num_anchors * 4, activation='linear')(x)
+    return x
 
-    def call(self, x, mask=None):
-        assert(len(x) == 2)
+def iou(box1,box2):
+    x1 = max(box1[0],box2[0])
+    y1 = max(box1[1],box2[1])
+    x2 = max(box1[2],box2[2])
+    y2 = max(box1[3],box2[3])
+    intersec = max(0,x2-x1+1) * max(0,y2-y1+1)
+    box1_area = (box1[2] - box1[0] +1) * (box1[3] - box1[1] + 1)
+    box2_area = (box2[2] - box2[0] + 1) * (box2[3] - box2[1] + 1)
+    union_area = box1_area + box2_area - intersec
+    iou = intersec / union_area
+    return iou
 
-        # x[0] is the feature map with shape (batch_size, height, width, nb_channels)
-        # x[1] is the ROI tensor with shape (batch_size, num_rois, 4)
-        feature_map = x[0]
-        rois = x[1]
 
-        input_shape = K.shape(feature_map)
-        outputs = []
+def nms(boxes, scores, threshold=0.5):
+    """
+    Perform Non-Maximum Suppression (NMS) on the boxes according to their scores.
 
-        for roi_idx in range(self.num_rois):
-            # Get the coordinates and dimensions of the ROI
-            x_start, y_start, x_end, y_end = rois[0, roi_idx, :]
+    Args:
+    boxes: Numpy array with shape (num_boxes, 4) containing the coordinates of the boxes.
+    scores: Numpy array with shape (num_boxes,) containing the scores of the boxes.
+    threshold: Float, threshold used to decide which boxes to keep.
 
-            # Compute the size of the ROI
-            roi_width = x_end - x_start
-            roi_height = y_end - y_start
+    Returns:
+    A list with the indices of the boxes to keep after NMS.
+    """
 
-            # Compute the size of a pooling bin in the ROI
-            bin_size_h = roi_height / float(self.pool_size)
-            bin_size_w = roi_width / float(self.pool_size)
+    # Sort the boxes by their scores in descending order
+    indices = scores.argsort()[::-1]
 
-            # Compute the indices of the pooling bins in the feature map
-            bin_idxs_h = tf.range(self.pool_size, dtype=tf.float32) * bin_size_h
-            bin_idxs_w = tf.range(self.pool_size, dtype=tf.float32) * bin_size_w
+    # Initialize an empty list to store the indices of the boxes to keep
+    keep_indices = []
 
-            # Add the coordinates of the ROI to the bin indices
-            x_idxs = bin_idxs_w + x_start
-            y_idxs = bin_idxs_h + y_start
+    while len(indices) > 0:
+        # Add the index of the box with the highest score to the list of indices to keep
+        keep_indices.append(indices[0])
 
-            # Convert the bin indices to integers
-            x_idxs = K.cast(K.round(x_idxs), dtype=tf.int32)
-            y_idxs = K.cast(K.round(y_idxs), dtype=tf.int32)
+        # Compute the IoU between the box with the highest score and all the other boxes
+        ious = iou(boxes[indices[0]], boxes[indices[1:]])
 
-            # Crop the feature map to the ROI and pool the values in each bin
-            roi = tf.image.crop_and_resize(feature_map, boxes=tf.constant([[0, y_start, x_start, y_end, x_end]]),
-                                            box_indices=tf.zeros((1,), dtype=tf.int32),
-                                            crop_size=(self.pool_size, self.pool_size))
-            outputs.append(roi)
+        # Keep only the boxes with an IoU below the threshold
+        mask = ious < threshold
+        indices = indices[1:][mask]
 
-        # Concatenate the ROI pooled features and return the result
-        pooled_features = K.concatenate(outputs, axis=0)
-        pooled_features = K.reshape(pooled_features, (1, self.num_rois, self.pool_size, self.pool_size, self.nb_channels))
-        return pooled_features
+    return keep_indices
+
+
+
+
 
 
 """
+
+Classifier layer
+Description:
+    A simple classifier that takes the feature maps generated by the RPN
+    and classifies them into the object classes.
+Args:
+    classifier_base_layers: The convolutional feature map generated by the RPN.
+    rois: The regions of interest, as a tensor of shape (num_rois, 4) where each row represents [x_min, y_min, x_max, y_max].
+    num_classes: The number of object classes to classify the ROIs into.
+    trainable: Whether or not the classifier weights should be trainable.
+Returns:
+    The ROI-class probabilities and the ROI-boundary box offsets.
+def classifier_layer(classifier_base_layers, rois, num_classes, trainable=False):
+
+    # Flatten the convolutional feature map
+    x = Flatten(name='flatten')(classifier_base_layers)
+
+    # Add fully connected layers with dropout and activation
+    x = Dense(4096, activation='relu', name='fc1')(x)
+    x = Dropout(0.5)(x)
+    x = Dense(4096, activation='relu', name='fc2')(x)
+    x = Dropout(0.5)(x)
+
+    # Define two output layers
+    x_class = Dense(num_classes, activation='softmax', name='dense_class_{}'.format(num_classes))(x)
+    x_regr = Dense(num_classes * 4, activation='linear', name='dense_regress_{}'.format(num_classes))(x)
+
+    # Reshape output to match the input ROIs
+    x_class = Reshape((tf.shape(rois)[0], num_classes), name='reshape_class_{}'.format(num_classes))(x_class)
+    x_regr = Reshape((tf.shape(rois)[0], num_classes * 4), name='reshape_regress_{}'.format(num_classes))(x_regr)
+
+    return [x_class, x_regr]
+
+
+def faster_rcnn(input_shape, num_classes):
+
+    # Define the input tensor
+    input = Input(shape=input_shape)
+
+    # Build the backbone CNN
+    base_layers = cnn_axlexnet(input_shape)
+
+    # Build the RPN layer
+    num_anchors = 9
+    rpn = rpn_layer(base_layers, num_anchors)
+
+    # Build the ROI pooling layer
+    rois = ROI_Pooling(rpn[0], rpn[1], num_rois=4, pool_size=(7, 7))
+
+    # Build the classifier layer
+    classifier = classifier_layer(rois, num_classes=num_classes)
+
+    # Define the model
+    model = Model(inputs=input, outputs=classifier)
+
+    return model
+
+# Define input shape and number of classes
+input_shape = (224, 224, 3)
+num_classes = 5
+
+# Build the model
+model = faster_rcnn(input_shape, num_classes)
+
+# Compile the model
+model.compile(optimizer='adam', loss=[smooth_L1_loss, softmax_loss], metrics={'dense_class_{}'.format(num_classes): 'accuracy'})
+
+# Train the model
+model.fit(X_train, [y_train_cls, y_train_regr], validation_data=(X_val, [y_val_cls, y_val_regr]), epochs=10, batch_size=32)
+
+# Save the model
+model.save('faster_rcnn.h5')
+
+
+
+
+
 import numpy as np
 import pandas as pd
 
@@ -338,4 +452,64 @@ for filename, boxes in boxes_dict.items():
 
     # Save the figure
     plt.savefig(filename + '.png')
+
+
+class RoiPoolingConv(layers):
+    def __init__(self, pool_size, num_rois, **kwargs):
+        super(RoiPoolingConv, self).__init__(**kwargs)
+        self.pool_size = pool_size
+        self.num_rois = num_rois
+
+    def build(self, input_shape):
+        self.nb_channels = input_shape[0][3]
+
+    def compute_output_shape(self, input_shape):
+        return None, self.num_rois, self.pool_size, self.pool_size, self.nb_channels
+
+    def call(self, x, mask=None):
+        assert(len(x) == 2)
+
+        # x[0] is the feature map with shape (batch_size, height, width, nb_channels)
+        # x[1] is the ROI tensor with shape (batch_size, num_rois, 4)
+        feature_map = x[0]
+        rois = x[1]
+
+        input_shape = K.shape(feature_map)
+        outputs = []
+
+        for roi_idx in range(self.num_rois):
+            # Get the coordinates and dimensions of the ROI
+            x_start, y_start, x_end, y_end = rois[0, roi_idx, :]
+
+            # Compute the size of the ROI
+            roi_width = x_end - x_start
+            roi_height = y_end - y_start
+
+            # Compute the size of a pooling bin in the ROI
+            bin_size_h = roi_height / float(self.pool_size)
+            bin_size_w = roi_width / float(self.pool_size)
+
+            # Compute the indices of the pooling bins in the feature map
+            bin_idxs_h = tf.range(self.pool_size, dtype=tf.float32) * bin_size_h
+            bin_idxs_w = tf.range(self.pool_size, dtype=tf.float32) * bin_size_w
+
+            # Add the coordinates of the ROI to the bin indices
+            x_idxs = bin_idxs_w + x_start
+            y_idxs = bin_idxs_h + y_start
+
+            # Convert the bin indices to integers
+            x_idxs = K.cast(K.round(x_idxs), dtype=tf.int32)
+            y_idxs = K.cast(K.round(y_idxs), dtype=tf.int32)
+
+            # Crop the feature map to the ROI and pool the values in each bin
+            roi = tf.image.crop_and_resize(feature_map, boxes=tf.constant([[0, y_start, x_start, y_end, x_end]]),
+                                            box_indices=tf.zeros((1,), dtype=tf.int32),
+                                            crop_size=(self.pool_size, self.pool_size))
+            outputs.append(roi)
+
+        # Concatenate the ROI pooled features and return the result
+        pooled_features = K.concatenate(outputs, axis=0)
+        pooled_features = K.reshape(pooled_features, (1, self.num_rois, self.pool_size, self.pool_size, self.nb_channels))
+        return pooled_features
+
 """
