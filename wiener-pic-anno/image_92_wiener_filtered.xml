@@ -1,0 +1,26 @@
+<annotation>
+	<folder>wiener_filtered_images with annotation</folder>
+	<filename>image_92_wiener_filtered.jpg</filename>
+	<path>/Users/lisababy/Downloads/wiener_filtered_images with annotation/image_92_wiener_filtered.jpg</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>50</width>
+		<height>50</height>
+		<depth>1</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>node</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>14</xmin>
+			<ymin>17</ymin>
+			<xmax>34</xmax>
+			<ymax>34</ymax>
+		</bndbox>
+	</object>
+</annotation>
