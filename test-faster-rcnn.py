@@ -8,6 +8,7 @@ import tensorflow as tf
 from keras import layers
 from keras.models import Model
 from keras.applications import ResNet50
+from keras.optimizers import Adam
 from keras.utils import Sequence
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.backend import epsilon
@@ -17,7 +18,10 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers import BatchNormalization, Concatenate, Conv2D, Dense, Dropout, Flatten, GlobalAveragePooling2D, Input, Lambda, ZeroPadding2D, MaxPooling2D
 #from keras_retinanet.utils.metrics import mean_average_precision
 from sklearn.model_selection import cross_val_score, train_test_split
+
+
 import joblib
+import pdb
 
 from keras import backend as K
 
@@ -54,6 +58,7 @@ if choice == 1 or choice == 2:
 
 """
 
+
 def extract_data(data, validation_split):
     # Split data into training and validation sets
     train_data, val_data = train_test_split(data, test_size=validation_split)
@@ -64,8 +69,9 @@ def extract_data(data, validation_split):
     train_boxes = []
     train_labels = []
     for filename in train_image_filenames:
-        image_data = cv2.imread(filename,cv2.IMREAD_GRAYSCALE)
+        image_data = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
         train_images.append(image_data)
+       
         image_boxes = train_data[train_data['filename'] == filename][[
             'xmin', 'ymin', 'xmax', 'ymax']].values
         train_boxes.append(image_boxes)
@@ -79,7 +85,7 @@ def extract_data(data, validation_split):
     val_boxes = []
     val_labels = []
     for filename in val_image_filenames:
-        image_data = cv2.imread(filename,cv2.IMREAD_GRAYSCALE)
+        image_data = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
         val_images.append(image_data)
         image_boxes = val_data[val_data['filename'] == filename][[
             'xmin', 'ymin', 'xmax', 'ymax']].values
@@ -89,6 +95,7 @@ def extract_data(data, validation_split):
         val_labels.append(image_labels)
 
     # Convert the inputs to the appropriate format
+    #
     train_images = np.array(train_images)
     train_boxes = [np.array(image_boxes) for image_boxes in train_boxes]
     train_labels = [np.array(image_labels) for image_labels in train_labels]
@@ -137,11 +144,11 @@ def calculate_iou(predictions, ground_truth):
         y1 = max(pred_box[1],gt_box[1])
         x2 = max(pred_box[2],gt_box[2])
         y2 = max(pred_box[3],gt_box[3])
-        intersection = max(0,x2-x1 + 1) * max(0, y2-y1+1)
+        intersection = [max(0,x2-x1 + 1) * max(0, y2-y1+1)]
 
         pred_area = (pred_box[2] -pred_box[0] + 1) * (pred_box[3] - pred_box[1] +1)
         gt_area = (gt_box[2] - gt_box[0] + 1) * (gt_box[3] - gt_box[1] + 1)
-        union = pred_area + gt_area - intersection
+        union = [pred_area + gt_area - intersection]
         iou = intersection / union
         iou_scores.append(iou)  
     return iou_scores
@@ -168,16 +175,18 @@ if __name__ =="__main__":
                 # Extract data and split into training and validation sets
                 train_images, train_boxes, train_labels, val_images, val_boxes, val_labels = extract_data(
                     data=data, validation_split=0.2)
-
+                dimension = (50,50,1)
                 # Train the model with validation
                 model = FasterRCNN(
-                    classes=train_labels, bounding_box_format=bounding_box_format)
-                early_stopping = EarlyStopping(
-                    monitor='val_loss', patience=3, mode='min', verbose=1)
-                model_checkpoint = ModelCheckpoint(
-                    'faster-rcnn-enhanced.h5', monitor='val_loss', mode='min', save_best_only=True, verbose=1)
+                    classes=1, bounding_box_format=bounding_box_format,backbone=define_backbone_alexnet(dimension))
+                optimizer = Adam(lr=1e-5)
+                model.compile(optimizer=optimizer,
+                  box_loss=tf.keras.losses.Huber(),
+                  classification_loss=tf.keras.losses.BinaryCrossentropy(),
+                  rpn_box_loss=tf.keras.losses.Huber(),
+                  rpn_cls_loss=tf.keras.losses.BinaryCrossentropy())
                 model.fit(train_images, train_boxes, train_labels, validation_data=(
-                    val_images, val_boxes, val_labels), epochs=10, callbacks=[early_stopping, model_checkpoint])
+                    val_images, val_boxes, val_labels), epochs=10)
                 model = load_model('faster-rcnn-enhanced.h5')
                 predictions = model.predict(val_images)
                 iou_scores = calculate_iou(predictions= predictions, ground_truth= val_boxes)
@@ -190,16 +199,27 @@ if __name__ =="__main__":
                 # Extract data and split into training and validation sets
                 train_images, train_boxes, train_labels, val_images, val_boxes, val_labels = extract_data(
                     data=data, validation_split=0.2)
-
+                #pdb.set_trace()  # set another breakpoint here
+                print(f'train_images: {train_images.shape}')
+                print(f'train_boxes: {[x.shape for x in train_boxes]}')
+                print(f'train_labels: {[x.shape for x in train_labels]}')
+                print(f'val_images: {val_images.shape}')
+                print(f'val_boxes: {[x.shape for x in val_boxes]}')
+                print(f'val_labels: {[x.shape for x in val_labels]}')
+                dimension = (50, 50, 1)
                 # Train the model with validation
                 model = FasterRCNN(
-                    classes=train_labels, bounding_box_format=bounding_box_format)
-                early_stopping = EarlyStopping(
-                    monitor='val_loss', patience=3, mode='min', verbose=1)
-                model_checkpoint = ModelCheckpoint(
-                    'faster-rcnn-og.h5', monitor='val_loss', mode='min', save_best_only=True, verbose=1)
+                    classes=1, bounding_box_format=bounding_box_format,backbone=define_backbone_alexnet(dimension))
+                
+                optimizer = Adam(lr=1e-5)
+                model.compile(optimizer=optimizer,
+                              box_loss=tf.keras.losses.Huber(),
+                              classification_loss=tf.keras.losses.BinaryCrossentropy(),
+                              rpn_box_loss=tf.keras.losses.Huber(),
+                              rpn_cls_loss=tf.keras.losses.BinaryCrossentropy())
+
                 model.fit(train_images, train_boxes, train_labels, validation_data=(
-                    val_images, val_boxes, val_labels), epochs=10, callbacks=[early_stopping, model_checkpoint])
+                    val_images, val_boxes, val_labels), epochs=10)
                 model = load_model('faster-rcnn-og.h5')
                 predictions = model.predict(val_images)
                 iou_scores = calculate_iou(predictions= predictions, ground_truth= val_boxes)
@@ -240,6 +260,122 @@ def evaluate(model, X, y):
     return metrics
 
     
+import pdb  # import the Python Debugger module
+
+def extract_data(data, validation_split):
+    # Split data into training and validation sets
+    train_data, val_data = train_test_split(data, test_size=validation_split)
+
+    # Extract data from training set
+    train_image_filenames = train_data['filename'].unique()
+    train_images = []
+    train_boxes = []
+    train_labels = []
+    for filename in train_image_filenames:
+        image_data = cv2.imread(filename,cv2.IMREAD_GRAYSCALE)
+        train_images.append(image_data)
+        pdb.set_trace()  # set a breakpoint here
+        image_boxes = train_data[train_data['filename'] == filename][[
+            'xmin', 'ymin', 'xmax', 'ymax']].values
+        train_boxes.append(image_boxes)
+        image_labels = train_data[train_data['filename']
+                                  == filename]['class'].values
+        train_labels.append(image_labels)
+
+    # Extract data from validation set
+    val_image_filenames = val_data['filename'].unique()
+    val_images = []
+    val_boxes = []
+    val_labels = []
+    for filename in val_image_filenames:
+        image_data = cv2.imread(filename,cv2.IMREAD_GRAYSCALE)
+        val_images.append(image_data)
+        image_boxes = val_data[val_data['filename'] == filename][[
+            'xmin', 'ymin', 'xmax', 'ymax']].values
+        val_boxes.append(image_boxes)
+        image_labels = val_data[val_data['filename']
+                                == filename]['class'].values
+        val_labels.append(image_labels)
+
+    # Convert the inputs to the appropriate format
+    train_images = np.array(train_images)
+    train_boxes = [np.array(image_boxes) for image_boxes in train_boxes]
+    train_labels = [np.array(image_labels) for image_labels in train_labels]
+    val_images = np.array(val_images)
+    val_boxes = [np.array(image_boxes) for image_boxes in val_boxes]
+    val_labels = [np.array(image_labels) for image_labels in val_labels]
+
+    return train_images, train_boxes, train_labels, val_images, val_boxes, val_labels
+
+
+if __name__ == "__main__":
+    while True:
+        print('1.Train with enhanced dataset')
+        print('2.Train with orginal dataset')
+        choice = int(input('Choose choice: '))
+        if choice == 1:
+            folder = 'dataset-enhanced.csv'
+            data = pd.read_csv(folder, sep=',')
+            classes = ['node']
+
+            # Extract data and split into training and validation sets
+            train_images, train_boxes, train_labels, val_images, val_boxes, val_labels = extract_data(
+                data=data, validation_split=0.2)
+
+            # Debugging
+            pdb.set_trace()  # set another breakpoint here
+            print(f'train_images: {train_images.shape}')
+            print(f'train_boxes: {[x.shape for x in train_boxes]}')
+            print(f'train_labels: {[x.shape for x in train_labels]}')
+            print(f'val_images: {val_images.shape}')
+            print(f'val_boxes: {[x.shape for x in val_boxes]}')
+            print(f'val_labels: {[x.shape for x in val_labels]}')
+
+            
+import tensorflow as tf
+from keras_cv.models import FasterRCNN
+
+# Define the classes for the model
+classes = ['person', 'car', 'truck']
+
+# Define the format for bounding boxes
+bounding_box_format = 'corners'
+
+# Define the backbone network
+backbone = 'resnet50'
+
+# Create the FasterRCNN model
+model = FasterRCNN(
+    classes=classes,
+    bounding_box_format=bounding_box_format,
+    backbone=backbone,
+)
+
+# Compile the model
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+    loss={
+        'rpn_class_loss': tf.keras.losses.BinaryCrossentropy(),
+        'rpn_bbox_loss': tf.keras.losses.MeanSquaredError(),
+        'rcnn_class_loss': tf.keras.losses.CategoricalCrossentropy(),
+        'rcnn_bbox_loss': tf.keras.losses.MeanSquaredError(),
+    },
+)
+
+# Train the model
+model.fit(train_dataset, epochs=10)
+
+# Evaluate the model
+model.evaluate(test_dataset)
+
+# Make predictions with the model
+predictions = model.predict(test_images)
+
+# Decode the predictions
+decoded_predictions = model.decode_predictions(predictions)
+
+# Visualize the predictions
+model.visualize_predictions(test_images, decoded_predictions)
 
 
 """
